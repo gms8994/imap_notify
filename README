@@ -1,0 +1,3 @@
+imap_notify
+
+Currently, uses a .mutt.imap file in my $HOME to determine what server and username will be used. This is going to be fairly specific to me, though could be easily modified to be used by others.
