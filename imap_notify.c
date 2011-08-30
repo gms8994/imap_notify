@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
 #include <malloc.h>
@@ -8,8 +9,48 @@ struct config {
 	char *value;
 } *configHead;
 
-struct config *configs[50];
-int configsIndex = 0;
+char buffer[256];
+char _err[256];
+
+char username[100];
+char password[100];
+char servername[100];
+
+int file_exists(char *fileName);
+int read_config(char *fileName);
+void chomp(char *str);
+void free_up();
+
+int main(int argc, char *argv[]) {
+	char *filename = NULL;
+
+	if (argc < 2) {
+		fprintf(stderr, "Usage: %s <mutt_config>\n",
+						argv[0]);
+		exit(1);
+	}
+	filename = argv[1];
+
+	int exists = file_exists(filename);
+
+	if (! exists) {
+		strcpy(_err, filename);
+		strcat(_err, " does not exist\n");
+		fprintf(stderr, "%s", _err);
+		return 1;
+	}
+
+	int result = read_config(filename);
+	if (result != 0) {
+		return result;
+	}
+
+	fprintf(stderr, "%s\n", username);
+	fprintf(stderr, "%s\n", password);
+	fprintf(stderr, "%s\n", servername);
+	free_up();
+
+}
 
 int file_exists(char * fileName) {
 	int exists = access(fileName, R_OK);
@@ -34,37 +75,19 @@ void chomp(char *str) {
 				break;
 		}
 	}
-
 	*(str+n)=0;     // ensure ASCIZ even if no CRLF
 }
 
-
-main() {
+int read_config(char *fileName) {
 	FILE *imaprc;
 	char *mode = "r";
-	char buffer[256];
-	char _err[256];
-	char *tokenized = NULL;
 	char split[] = " ";
+	char *tokenized = NULL;
 
-	char *filename = "/home/glens/.mutt.imap";
-
-	int exists = file_exists(filename);
-
-	if (! exists) {
-		strcpy(_err, filename);
-		strcat(_err, " does not exist\n");
-		fprintf(stderr, "%s", _err);
-		return 1;
-	}
-
-	imaprc = fopen(filename, mode);
+	imaprc = fopen(fileName, mode);
 
 	if (imaprc == NULL) {
-		strcpy(_err, "Can't open ");
-		strcat(_err, filename);
-		strcat(_err, "\n");
-		fprintf(stderr, "%s", _err);
+		fprintf(stderr, "Can't open %s\n", fileName);
 		return 1;
 	}
 
@@ -98,26 +121,24 @@ main() {
 			// tokenize the string again
 			tokenized = strtok(NULL, split);
 		}
-		configs[configsIndex++] = c;
+
+		if (strcmp(c->name, "imap_login") == 0) {
+			strcpy(username, c->value);
+		} else if (strcmp(c->name, "imap_pass") == 0) {
+			strcpy(password, c->value);
+		} else if (strcmp(c->name, "mailboxes") == 0) {
+			strcpy(servername, c->value);
+		}
+
+		free(c);
 	}
 
 	fclose(imaprc);
 
-	// print the values from the configs struct
+	return 0;
+}
+
+void free_up() {
 	int n = 0;
-	for(n = 0; n < configsIndex; n++) {
-		printf("%s = %s\n", configs[n]->name, configs[n]->value);
-	}
 
-	// free up our memory
-	for(n = 0; n < configsIndex; n++) {
-		if (configs[n] != NULL) {
-			if (configs[n]->name != NULL)
-				free(configs[n]->name);
-			if (configs[n]->value != NULL)
-				free(configs[n]->value);
-
-			free(configs[n]);
-		}
-	}
 }
