@@ -1,14 +1,24 @@
+#include <arpa/inet.h>
+#include <ctype.h>
+#include <malloc.h>
+#include <netdb.h>
+#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <string.h>
-#include <malloc.h>
+#include <sys/socket.h>
+#include <time.h>
+#include <unistd.h>
+
+#define RCVBUFSIZE 1000   /* Size of receive buffer */
 
 struct config {
 	char *name;
 	char *value;
 } *configHead;
 
+int commandId = 0;
+char commandBuff[500];
 char buffer[256];
 char _err[256];
 
@@ -18,8 +28,13 @@ char servername[100];
 
 int file_exists(char *fileName);
 int read_config(char *fileName);
+int sockfd;
 void chomp(char *str);
+void communicate();
+void connect_to_server();
 void free_up();
+void handle_message(char *commsBuffer);
+void send_message(int sock, char *msg);
 
 int main(int argc, char *argv[]) {
 	char *filename = NULL;
@@ -34,9 +49,7 @@ int main(int argc, char *argv[]) {
 	int exists = file_exists(filename);
 
 	if (! exists) {
-		strcpy(_err, filename);
-		strcat(_err, " does not exist\n");
-		fprintf(stderr, "%s", _err);
+		fprintf(stderr, "%s does not exist\n", filename);
 		return 1;
 	}
 
@@ -45,9 +58,16 @@ int main(int argc, char *argv[]) {
 		return result;
 	}
 
-	fprintf(stderr, "%s\n", username);
-	fprintf(stderr, "%s\n", password);
-	fprintf(stderr, "%s\n", servername);
+	connect_to_server();
+	communicate();
+
+	close(sockfd);
+
+	sleep(10);
+
+	// fprintf(stderr, "%s\n", username);
+	// fprintf(stderr, "%s\n", password);
+	// fprintf(stderr, "%s\n", servername);
 	free_up();
 
 }
@@ -83,6 +103,7 @@ int read_config(char *fileName) {
 	char *mode = "r";
 	char split[] = " ";
 	char *tokenized = NULL;
+	char *valueTok = NULL;
 
 	imaprc = fopen(fileName, mode);
 
@@ -101,6 +122,7 @@ int read_config(char *fileName) {
 		// allocate a chunk of memory for the config struct
 		c = malloc( sizeof( struct config ) );
 		if (c == NULL) {
+			fprintf(stderr, "Couldn't allocate memory for the config object\n");
 			return 2;
 		}
 
@@ -109,13 +131,43 @@ int read_config(char *fileName) {
 			// skip "set" and "=" tokens
 			if ((strcmp(tokenized, "set") == 0) || (strcmp(tokenized, "=") == 0)) { }
 			else {
-				// 'set name = value'; if we've seen the name, then it's automagically the value
+				// 'set name = value'; if we've seen the name,
+				// then it's automagically the value
 				if (c->name == NULL) {
 					c->name = malloc( strlen( tokenized ));
+					if (c->name == NULL) {
+						fprintf(stderr, "Couldn't allocate memory for the name\n");
+						return 2;
+					}
 					strcpy(c->name, tokenized);
 				} else {
-					c->value = malloc( strlen ( tokenized ));
-					strcpy(c->value, tokenized);
+
+					valueTok = strtok( tokenized, "'" );
+
+					// the strings are different
+					if (strcmp(tokenized, valueTok) != 0) {
+						c->value = malloc( strlen ( valueTok ) );
+						if (c->value == NULL) {
+							fprintf(stderr, "Couldn't allocate memory for the value\n");
+							return 2;
+						}
+						strcpy(c->value, valueTok);
+					} else {
+						// this config option was not surrounded by '
+						// so tokenize with {, then }
+
+						valueTok = strtok( tokenized, "{" );
+						valueTok = strtok( valueTok, "}" );
+
+						if (strcmp(tokenized, valueTok) != 0) {
+							c->value = malloc( strlen ( valueTok ));
+							if (c->value == NULL) {
+								fprintf(stderr, "Couldn't allocate memory for the value\n");
+								return 2;
+							}
+							strcpy(c->value, valueTok);
+						}
+					}
 				}
 			}
 			// tokenize the string again
@@ -141,4 +193,169 @@ int read_config(char *fileName) {
 void free_up() {
 	int n = 0;
 
+}
+
+void connect_to_server() {
+	char *port = "143";
+	struct addrinfo hints, *servinfo, *p;
+	int rv;
+	
+	fprintf(stderr, "Connecting to server\n");
+
+	memset(&hints, 0, sizeof hints);
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+
+	// resolve the name to an IP
+	if ((rv = getaddrinfo(servername, port, &hints, &servinfo)) != 0) {
+		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
+		exit(1);
+	}
+
+	for(p = servinfo; p != NULL; p = p->ai_next) {
+		if ((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1) {
+			fprintf(stderr, "socket\n");
+			continue;
+		}
+
+		if (connect(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
+			close(sockfd);
+			fprintf(stderr, "connect\n");
+			continue;
+		}
+
+		fprintf(stderr, "successfully connected\n");
+		break; // if we get here, we must have connected successfully
+	}
+
+	if (p == NULL) {
+		fprintf(stderr, "failed to connect\n");
+		exit(2);
+	}
+
+	fprintf(stderr, "Done connecting\n");
+
+	freeaddrinfo(servinfo);
+
+}
+
+void communicate() {
+	int n, bytesRcvd, totalBytesRcvd;;
+	char commsBuffer[RCVBUFSIZE];
+	bytesRcvd = 1;
+
+	while (bytesRcvd != 0) {
+		bytesRcvd = recv_message(sockfd, commsBuffer);
+		totalBytesRcvd += bytesRcvd;
+		commsBuffer[bytesRcvd] = '\0';
+
+		handle_message(commsBuffer);
+		usleep(500);
+	}
+
+	fprintf(stderr, "Received a total of %d bytes\n", totalBytesRcvd);
+}
+
+void send_message(int sock, char *msg) {
+	int msgLen = 0;
+
+	msgLen = strlen(msg);
+
+	fprintf(stderr, "Sending %s", msg);
+
+	if (send(sock, msg, msgLen, 0) != msgLen) {
+		fprintf(stderr, "send() sent a different number of bytes than expected\n");
+		exit(1);
+	}
+}
+
+int recv_message(int sock, char *commsBuffer) {
+	int bytesRcvd;
+
+	if ((bytesRcvd = recv(sock, commsBuffer, RCVBUFSIZE - 1, 0)) <= 0) {
+		fprintf(stderr, "recv() failed or connection closed prematurely\n");
+		exit(1);
+	}
+
+	fprintf(stderr, "Received %s\n", commsBuffer);
+	return bytesRcvd;
+}
+
+void handle_message(char *commsBuffer) {
+	char *tokenized;
+	char *origToken;
+	char *split = " ";
+
+
+	if (check_for_message("UID FETCH completed", commsBuffer) == 0) {
+		tokenized = strtok( commsBuffer, "\n" );
+		while (tokenized != NULL) {
+
+			if (check_for_message("\\Seen", tokenized) == 0) { /* this message has been seen */
+			} else {
+				char *msgToken;
+				msgToken = strtok( tokenized, " ");
+				while (msgToken != NULL) {
+					if (is_numeric(msgToken)) {
+
+
+					}
+					msgToken = strtok(NULL, " ");
+				}
+			}
+			tokenized = strtok(NULL, "\n");
+		}
+	} else if (check_for_message("SEARCH completed", commsBuffer) == 0) {
+
+		sprintf(commandBuff, "%d UID FETCH ", ++commandId);
+
+		chomp(commsBuffer);
+
+		tokenized = strtok( commsBuffer, split );
+		while (tokenized != NULL) {
+			if (is_numeric(tokenized)) {
+				sprintf(commandBuff, "%s%s,", commandBuff, tokenized);
+			}
+			tokenized = strtok( NULL, split );
+		}
+
+		// remove trailing comma
+		commandBuff[strlen(commandBuff)-1] = '\0';
+
+		sprintf(commandBuff, "%s FLAGS\n", commandBuff);
+		send_message(sockfd, commandBuff);
+	} else if (check_for_message("SELECT completed", commsBuffer) == 0) {
+		sprintf(commandBuff, "%d UID SEARCH ALL\n", ++commandId);
+		send_message(sockfd, commandBuff);
+	} else if (check_for_message("LOGIN completed", commsBuffer) == 0) {
+		sprintf(commandBuff, "%d SELECT INBOX\n", ++commandId);
+		send_message(sockfd, commandBuff);
+	} else if (check_for_message("* OK", commsBuffer) == 0) {
+		sprintf(commandBuff, "%d LOGIN \"%s\" %s\n", ++commandId, username, password);
+		send_message(sockfd, commandBuff);
+	} else {
+	}
+}
+
+int check_for_message(char *message, char *commsBuffer) {
+	int messageLen;
+	messageLen = strlen(message);
+
+	char *messageFound;
+
+	messageFound = strstr(commsBuffer, message);
+	if (messageFound == NULL) {
+		return 1;
+	} else {
+		return 0;
+	}
+}
+
+int is_numeric(const char *s) {
+	if (s == NULL || *s == '\0' || isspace(*s))
+		return 0;
+
+	char *p;
+	strtod(s, &p);
+	return *p == '\0';
 }
