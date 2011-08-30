@@ -17,6 +17,7 @@ struct config {
 	char *value;
 } *configHead;
 
+int stage = 0;
 int commandId = 0;
 char commandBuff[500];
 char buffer[256];
@@ -26,8 +27,11 @@ char username[100];
 char password[100];
 char servername[100];
 
+int check_for_message(char *message, char *commsBuffer);
 int file_exists(char *fileName);
+int is_numeric(const char *s);
 int read_config(char *fileName);
+int recv_message(int sock, char *commsBuffer);
 int sockfd;
 void chomp(char *str);
 void communicate();
@@ -62,14 +66,9 @@ int main(int argc, char *argv[]) {
 	communicate();
 
 	close(sockfd);
-
-	sleep(10);
-
-	// fprintf(stderr, "%s\n", username);
-	// fprintf(stderr, "%s\n", password);
-	// fprintf(stderr, "%s\n", servername);
 	free_up();
-
+	
+	return 0;
 }
 
 int file_exists(char * fileName) {
@@ -191,7 +190,7 @@ int read_config(char *fileName) {
 }
 
 void free_up() {
-	int n = 0;
+	// int n = 0;
 
 }
 
@@ -240,7 +239,7 @@ void connect_to_server() {
 }
 
 void communicate() {
-	int n, bytesRcvd, totalBytesRcvd;;
+	int bytesRcvd, totalBytesRcvd;;
 	char commsBuffer[RCVBUFSIZE];
 	bytesRcvd = 1;
 
@@ -277,17 +276,18 @@ int recv_message(int sock, char *commsBuffer) {
 		exit(1);
 	}
 
-	fprintf(stderr, "Received %s\n", commsBuffer);
+	// fprintf(stderr, "Received %s\n", commsBuffer);
 	return bytesRcvd;
 }
 
 void handle_message(char *commsBuffer) {
 	char *tokenized;
-	char *origToken;
 	char *split = " ";
 
-
-	if (check_for_message("UID FETCH completed", commsBuffer) == 0) {
+	if ((check_for_message("[HEADER.FIELDS (DATE SUBJECT FROM TO)]", commsBuffer) == 0) && (stage == 5)) {
+		fprintf(stderr, "COMMAND: %s\n", commsBuffer);
+	} else if ((check_for_message("UID FETCH completed", commsBuffer) == 0) && (stage == 4)) {
+		stage++;
 		tokenized = strtok( commsBuffer, "\n" );
 		while (tokenized != NULL) {
 
@@ -297,7 +297,9 @@ void handle_message(char *commsBuffer) {
 				msgToken = strtok( tokenized, " ");
 				while (msgToken != NULL) {
 					if (is_numeric(msgToken)) {
-
+						
+						sprintf(commandBuff, "%d UID FETCH %s BODY.PEEK[HEADER.FIELDS (Date Subject From To)]\n", ++commandId, msgToken);
+						send_message(sockfd, commandBuff);
 
 					}
 					msgToken = strtok(NULL, " ");
@@ -306,6 +308,7 @@ void handle_message(char *commsBuffer) {
 			tokenized = strtok(NULL, "\n");
 		}
 	} else if (check_for_message("SEARCH completed", commsBuffer) == 0) {
+		stage++;
 
 		sprintf(commandBuff, "%d UID FETCH ", ++commandId);
 
@@ -325,12 +328,15 @@ void handle_message(char *commsBuffer) {
 		sprintf(commandBuff, "%s FLAGS\n", commandBuff);
 		send_message(sockfd, commandBuff);
 	} else if (check_for_message("SELECT completed", commsBuffer) == 0) {
+		stage++;
 		sprintf(commandBuff, "%d UID SEARCH ALL\n", ++commandId);
 		send_message(sockfd, commandBuff);
 	} else if (check_for_message("LOGIN completed", commsBuffer) == 0) {
+		stage++;
 		sprintf(commandBuff, "%d SELECT INBOX\n", ++commandId);
 		send_message(sockfd, commandBuff);
 	} else if (check_for_message("* OK", commsBuffer) == 0) {
+		stage++;
 		sprintf(commandBuff, "%d LOGIN \"%s\" %s\n", ++commandId, username, password);
 		send_message(sockfd, commandBuff);
 	} else {
